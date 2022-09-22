@@ -1,0 +1,438 @@
+library(tidyverse)
+library(rpact)
+library(survival)
+library(nph)
+
+# WHAT YOU HAVE PLANNED : Data simulation ####
+end_accrual_after_nb_month <- 40
+end_study_after_nb_month <- 60
+tps_restant_apres_dernier_recrutement <- end_study_after_nb_month - end_accrual_after_nb_month
+beta <- 0.2
+alpha <- 0.025
+K0=1
+K <- 1 # Weibull's shape parameter for the times of events in the experimental arm
+median1 <- 18
+median0 <- 12
+lambda1 <- log(2) / median1
+lambda0 <- log(2) / median0
+theta <- log(lambda1 / lambda0) # log(HR)
+exp(theta) #HR
+
+
+
+Get_Sample_Size_for_TAU0.5 <- function(alpha, beta, lambda0, lambda1,
+                                       end_study_after_nb_month,
+                                       end_accrual_after_nb_month) {
+  tau <- 0.5
+  schema <- getDesignGroupSequential(kMax = 2,
+                                     alpha = alpha,
+                                     sided = 1,
+                                     beta = beta,
+                                     informationRates = c(tau, 1),
+                                     typeOfDesign = "asOF"      #O'Brien & Fleming type alpha spending
+  )
+  DesignPlan <- getSampleSizeSurvival(design = schema,
+                                      typeOfComputation = "Schoenfeld",
+                                      thetaH0 = 1,
+                                      lambda1 = lambda1, #instantaneous risk in the experimental arm
+                                      lambda2 = lambda0, #instantaneous risk in the control arm
+                                      kappa = 1,
+                                      allocationRatioPlanned = 1,
+                                      accrualTime = c(0, end_accrual_after_nb_month),
+                                      followUpTime = end_study_after_nb_month - end_accrual_after_nb_month)
+  d <- ceiling(DesignPlan$maxNumberOfEvents)
+  N <- ceiling(DesignPlan$maxNumberOfSubjects)
+  if (N %% 2 != 0) {
+    N <- N + 1
+  }
+  return(data.frame("Number of necessary events" = d,
+                    "Number of patients to enroll" = N))
+}
+
+d <- as.numeric(Get_Sample_Size_for_TAU0.5(alpha = alpha, beta = 0.2, lambda0, lambda1, 60, 40)[1])
+N <- as.numeric(Get_Sample_Size_for_TAU0.5(alpha = alpha, beta = 0.2, lambda0, lambda1, 60, 40)[2])
+
+# SIMULATIONS ####
+K <- 1
+
+# ATTENTION CHANGE LE TYPE OF DESIGN
+
+Get_Analysis_Time <- function(TAU, alpha, beta, lambda0, lambda1, 
+                              end_study_after_nb_month, end_accrual_after_nb_month) {
+  IA <- c(rep(NA, length(TAU)))
+  vect_early_stop <- c(rep(NA, length(TAU)))
+  vect_final_stop <- c(rep(NA, length(TAU)))
+  vect_c_alpha2 <- c(rep(NA, length(TAU)))
+  eventsPerStage <- c(rep(NA, length(TAU)))
+  interim_SS <- c(rep(NA, length(TAU)))
+  for (b in seq_len(length(TAU))) {
+    tau <- TAU[b]
+    if(tau<1){
+      schema <- getDesignGroupSequential(kMax = 2,
+                                         alpha = alpha,
+                                         sided = 1,
+                                         beta = beta,
+                                         informationRates = c(tau, 1),
+                                         typeOfDesign = "OF" #"Pocock"      #O'Brien & Fleming type alpha spending
+      )
+      DesignPlan <- getSampleSizeSurvival(design = schema,
+                                          typeOfComputation = "Schoenfeld",
+                                          thetaH0 = 1,
+                                          lambda1 = lambda1, #instantaneous risk in the experimental arm
+                                          lambda2 = lambda0, #instantaneous risk in the control arm
+                                          kappa = 1,
+                                          allocationRatioPlanned = 1,
+                                          accrualTime = c(0, end_accrual_after_nb_month),
+                                          followUpTime = end_study_after_nb_month - end_accrual_after_nb_month)
+      IA[b] <- DesignPlan$analysisTime[1]
+      vect_early_stop[b] <- DesignPlan$criticalValuesPValueScale[1]
+      vect_final_stop[b] <- DesignPlan$criticalValuesPValueScale[2]
+      vect_c_alpha2[b] <- exp(- qchisq((1 - DesignPlan$criticalValuesPValueScale[2]), df = 4, ncp = 0) / 2)
+      eventsPerStage[b] <- ceiling(DesignPlan$eventsPerStage[1,1])
+      interim_SS[b] <- ceiling(DesignPlan$numberOfSubjects[1])
+    }else{
+      TAU[b] <- 1
+      IA[b] <- 60
+      vect_early_stop[b] <- NA
+      vect_final_stop[b] <- alpha
+      vect_c_alpha2[b] <- exp(- qchisq((1 - vect_final_stop[length(TAU)]), df = 4, ncp = 0) / 2)
+      eventsPerStage[b] <- d
+      interim_SS[b] <- N
+    }
+  }
+  return(data.frame(TAU, IA, vect_early_stop, vect_final_stop, vect_c_alpha2,eventsPerStage,interim_SS))
+}
+temps_informatifs <- c(seq(0.2, 1, 0.05))
+lambda1 <- log(2)/median1
+
+TAU <- as.numeric(Get_Analysis_Time(TAU = temps_informatifs, alpha, beta, lambda0, lambda1,
+                                    end_study_after_nb_month = 60, end_accrual_after_nb_month = 40)$TAU)
+IA <- as.numeric(Get_Analysis_Time(TAU = temps_informatifs, alpha, beta, lambda0, lambda1,
+                                   end_study_after_nb_month = 60, end_accrual_after_nb_month = 40)$IA)
+vect_early_stop <- as.numeric(Get_Analysis_Time(TAU = temps_informatifs, alpha, beta, lambda0, lambda1,
+                                                end_study_after_nb_month = 60,
+                                                end_accrual_after_nb_month = 40)$vect_early_stop)
+vect_final_stop <- as.numeric(Get_Analysis_Time(TAU = temps_informatifs, alpha, beta, lambda0, lambda1,
+                                                end_study_after_nb_month = 60,
+                                                end_accrual_after_nb_month = 40)$vect_final_stop)
+vect_c_alpha2 <- as.numeric(Get_Analysis_Time(TAU = temps_informatifs, alpha, beta, lambda0, lambda1,
+                                              end_study_after_nb_month = 60,
+                                              end_accrual_after_nb_month = 40)$vect_c_alpha2)
+eventsPerStage <- as.numeric(Get_Analysis_Time(TAU = temps_informatifs, alpha, beta, lambda0, lambda1,
+                                               end_study_after_nb_month = 60,
+                                               end_accrual_after_nb_month = 40)$eventsPerStage)
+interim_SS <- as.numeric(Get_Analysis_Time(TAU = temps_informatifs, alpha, beta, lambda0, lambda1,
+                                           end_study_after_nb_month = 60,
+                                           end_accrual_after_nb_month = 40)$interim_SS)
+
+median1 <- 18 #12 10 16 24 15
+median0 <- 12 # 16 10
+lambda1 <- log(2) / median1
+lambda0 <- log(2) / median0
+K <- 1
+K0 <- 1 #4
+theta <- log(lambda0/lambda1)
+nb_simu <- 10000
+var=4
+theta0 <- 0
+end_accrual_after_nb_month <- end_accrual_after_nb_month
+end_study <- end_study_after_nb_month
+efficacy <- c(rep(NA, length(TAU)))
+efficacy_BAYES <-  c(rep(NA, length(TAU)))
+DESSEAUX <- c(rep(NA, length(TAU)))
+WASSMER <- c(rep(NA, length(TAU)))
+JORGENS <- c(rep(NA, length(TAU)))
+NAIVE <-  c(rep(NA, length(TAU)))
+BAYES <-  c(rep(NA, length(TAU)))
+BAYES_SSR <-  c(rep(NA, length(TAU)))
+effectif <- c(rep(NA, length(TAU)))
+effectif_Bayes <- c(rep(NA, length(TAU)))
+Adaptation <-  c(rep(NA, length(TAU)))
+Biais1 <-  c(rep(NA, length(TAU)))
+Biais2 <-  c(rep(NA, length(TAU)))
+Mean_additionnal_deaths <- c(rep(NA, length(TAU)))
+for (b in seq_len(length(TAU))) { 
+  tau <- TAU[b]
+  tps_interim <- IA[b]
+  early_stop <- vect_early_stop[b]
+  final_stop <- vect_final_stop[b]
+  c_alpha2 <- vect_c_alpha2[b]
+  ePS <- eventsPerStage[b]
+  n1_planned <- interim_SS[b]
+  handicap <- 0.16
+  n <- tau * d
+  n0 <- var / (sqrt(var / (handicap * d))) ^ 2
+  var_p <- var / (n + n0)
+  Borne <- c(rep(NA,2))
+  Borne[1] <- (var / n) * ((0 / var_p) - (theta0 * n0 / var) + qnorm(0.025) / sqrt(var_p))
+  
+  w1 <- sqrt((tau * d) / d) # proportion of events expected to be observed at IA
+  w2 <- sqrt(1 - w1^2)
+  
+  # Expected number of events Jorgens
+  e_11 <- tau * d
+  e_12 <-  round(n1_planned / N * d) -  e_11#round(dim(filter(data, recrutement <= tps_interim))[1] / N * d) -  e_11
+  e_22 <- pmax(0, d - e_11 - e_12) 
+  # Jorgens preplanned Weights
+  w11 <- sqrt(e_11 / (e_11 + e_12 + e_22))
+  if (e_12 <= 0) {
+    w12 <- 0
+  }else{
+    w12 <- sqrt((e_12 / e_11) * w11^2)
+  }
+  if (e_22 != 0) {
+    w22 <- sqrt(1 - (w11^2 + w12^2))
+  }
+  
+  prop_rejet_WASSMER <- c(rep(NA, nb_simu))
+  prop_efficacy <- c(rep(NA, nb_simu))
+  efficacy_Bayes <- c(rep(NA, nb_simu))
+  prop_rejet_DESSEAUX <- c(rep(NA, nb_simu))
+  prop_rejet_JORGENS <- c(rep(NA, nb_simu))
+  prop_rejet_NAIVE <- c(rep(NA, nb_simu))
+  prop_rejet_BAYES_SSR <- c(rep(NA, nb_simu))
+  SS2  <- c(rep(NA, nb_simu))
+  SS2_Bayes  <- c(rep(NA, nb_simu))
+  adaptation <- c(rep(NA, nb_simu))
+  logHR <- c(rep(NA, nb_simu))
+  logHR_estime1 <- c(rep(NA, nb_simu))
+  logHR_estime2 <- c(rep(NA, nb_simu))
+  classique <- c(rep(NA, nb_simu))
+  additionnal_deaths <- c(rep(NA, nb_simu))
+  set.seed(27011996)
+  for (i in 1:nb_simu) {
+    data <- data_generation(N, lambda0, lambda1, K, K0, end_accrual_after_nb_month, end_study)
+    
+    if (tau != 1 & sum(data$evt)>=ePS) { 
+      tps_interim <- filter(data,evt==1)[order(filter(data,evt==1)$time_since_study_begening),][ePS,"time_since_study_begening"]
+      d1 <- dim(filter(filter(data, evt == 1), time_since_study_begening <= tps_interim))[1] #number of events observed at IA
+      
+      sous_base <- filter(data, recrutement <= tps_interim) %>%
+        mutate(evt = ifelse(time_since_study_begening > tps_interim, 0, evt)) %>%
+        mutate(tt = ifelse(time_since_study_begening > tps_interim, tps_interim - recrutement, tt))
+      LR_1 <- as.numeric(logrank.test(time = sous_base$tt,
+                                      event = sous_base$evt,
+                                      group = sous_base$trait,
+                                      alternative = "greater")$test[3])
+      
+      p1 <- 1-pnorm(LR_1)
+      d1 <- sum(sous_base$evt)
+      n1 <- dim(sous_base)[1]
+      
+      fit1 <- coxph(Surv(tt, evt)~trait, data = sous_base)
+      Zstat1 <- summary(fit1)$coef[1]
+
+      logHR_estime1[i] <- Zstat1
+      if (Zstat1 < Borne[1]) {
+        efficacy_Bayes[i] <- 1
+
+        decision_Bayes_SSR <- 1
+        prop_rejet_BAYES_SSR[i] <- decision_Bayes_SSR
+        SS2_Bayes[i] <- dim(sous_base)[1]
+        logHR_estime2[i] <- NA
+      }else{
+        efficacy_Bayes[i] <- 0
+        
+        if(tps_interim < end_accrual_after_nb_month){ # we can still enroll more patients
+          b_etoile <- qnorm(1-final_stop)
+          d2_etoile <- (d1/(Zstat1*sqrt(d1/4))^2) * (( (b_etoile*sqrt(d)- (Zstat1*d1/sqrt(4)) ) / sqrt(d-d1)) + qnorm(1-beta) )^2
+          
+          d_fin2 <- d1 + d2_etoile
+          lambda1_reestime <- sum(filter(sous_base,trait==1)$evt)/sum(filter(sous_base,trait==1)$tt)
+          lambda0_reestime <- sum(filter(sous_base,trait==0)$evt)/sum(filter(sous_base,trait==0)$tt)
+          P0 <- 1 - (1/(end_accrual_after_nb_month*lambda0_reestime))*(exp(-lambda0_reestime*tps_restant_apres_dernier_recrutement)*(1-exp(-lambda0_reestime*end_accrual_after_nb_month)))
+          P1 <- 1 - (1/(end_accrual_after_nb_month*lambda1_reestime))*(exp(-lambda1_reestime*tps_restant_apres_dernier_recrutement)*(1-exp(-lambda1_reestime*end_accrual_after_nb_month)))
+          N_revised_Bayes <- 2*d_fin2 / (P0+P1)
+          
+          N_revised_Bayes <- ceiling(N_revised_Bayes)
+          N_revised_Bayes <- min(N_revised_Bayes,2*N)
+          n2_Bayes <- max(N_revised_Bayes - n1,  0)
+          adaptation[i] <- 1
+          
+          data2_Bayes <- data_generation_Stage2(n2_Bayes, lambda0, lambda1, K, K0, end_accrual_after_nb_month, end_study_after_nb_month,tps_interim)
+          data1_Bayes <- filter(data, recrutement <= tps_interim)
+          data_Bayes <- rbind(data1_Bayes,data2_Bayes)
+        }else{data_Bayes <- data}
+        d2 <- sum(data_Bayes$evt)
+        var_p <- 4 / (d2 + n0)
+        Borne[2] <- (var / d2) * ((0 / var_p) - (theta0 * n0 / var) + qnorm(0.025) / sqrt(var_p))
+        SS2_Bayes[i] <- dim(data_Bayes)[1]
+        fit2_SSR <- coxph(Surv(tt, evt)~trait, data = data_Bayes)
+        Zstat2_SSR <- summary(fit2_SSR)$coef[1]
+        logHR_estime2[i] <- Zstat2_SSR
+        decision_Bayes_SSR <- ifelse(Zstat2_SSR < Borne[2], 1, 0)
+        prop_rejet_BAYES_SSR[i] <- decision_Bayes_SSR
+        
+      }
+      
+      
+      
+      if (p1 < early_stop) {
+        early_stopping_D <- "efficacy"
+        prop_efficacy[i] <- ifelse(early_stopping_D == "NO",0,1)
+        decision_D <- "reject H0"
+        COMBI_D <- NA
+        
+        decision <- "reject H0"
+        
+        
+        p_final <- NA
+        decision_J <- "reject H0"
+        
+        decision_naive <- 1
+        
+        SS2[i] <- dim(sous_base)[1]
+        adaptation[i] <- 0
+        classique[i] <- 0
+        additionnal_deaths[i] <- d1
+      }  else{ # proceeds to stage 2
+        early_stopping_D <- "NO"
+        prop_efficacy[i] <- ifelse(early_stopping_D == "NO",0,1)
+        
+        if(tps_interim < end_accrual_after_nb_month){ # we can still enroll more patients
+          b_etoile <- qnorm(1-final_stop)
+          d2_etoile <- (d1/LR_1^2) * (( (b_etoile*sqrt(d)-LR_1*sqrt(d1)) / sqrt(d-d1)) + qnorm(1-beta) )^2
+
+          
+          d_fin2 <- d1 + d2_etoile
+          lambda1_reestime <- sum(filter(sous_base,trait==1)$evt)/sum(filter(sous_base,trait==1)$tt)
+          lambda0_reestime <- sum(filter(sous_base,trait==0)$evt)/sum(filter(sous_base,trait==0)$tt)
+          P0 <- 1 - (1/(end_accrual_after_nb_month*lambda0_reestime))*(exp(-lambda0_reestime*tps_restant_apres_dernier_recrutement)*(1-exp(-lambda0_reestime*end_accrual_after_nb_month)))
+          P1 <- 1 - (1/(end_accrual_after_nb_month*lambda1_reestime))*(exp(-lambda1_reestime*tps_restant_apres_dernier_recrutement)*(1-exp(-lambda1_reestime*end_accrual_after_nb_month)))
+          N_revised <- 2*d_fin2 / (P0+P1)
+          
+          (N_revised <- ceiling(N_revised))
+          N_revised <- min(N_revised,2*N)
+          n2 <- max(N_revised - n1,  0)
+          adaptation[i] <- 1
+          
+          
+          data2 <- data_generation_Stage2(n2, lambda0, lambda1, K, K0, end_accrual_after_nb_month, end_study_after_nb_month,tps_interim)
+          data1 <- filter(data, recrutement <= tps_interim)
+          data <- rbind(data1,data2)
+          
+        }
+        
+        if(N_revised!=N){
+          adaptation[i] <- 1
+        }else{adaptation[i] <- 0}
+        SS2[i] <- dim(data)[1]
+        d2 <- sum(data$evt)
+        additionnal_deaths[i] <- d2
+        
+        LR_2 <- as.numeric(logrank.test(time = data$tt,
+                                        event = data$evt,
+                                        group = data$trait,
+                                        alternative = "greater")$test[3])
+        decision_naive <- ifelse((1-pnorm(LR_2)) < final_stop, 1, 0)
+        
+        if(d1!=d2){ 
+          classique[i] <- 0
+          Z2 <- ((sqrt(d2) * LR_2) - (sqrt(d1) * LR_1)) / (sqrt(d2 - d1))
+          p2 <- (1-pnorm(Z2))
+          
+          
+          COMBI_D <- p1 * p2
+          if (COMBI_D < c_alpha2) {
+            decision_D <- "reject H0"
+          }else{
+            decision_D <- "don't reject H0"
+          }
+          
+          
+          COMBI <-  ((w1 * LR_1) + (w2 * Z2))
+          p <- 1-pnorm(COMBI)
+          decision <- ifelse(p < final_stop, "reject H0", "don't reject H0")
+          
+          
+          # Jorgens' decision rules
+          data_22 <- filter(data, recrutement > tps_interim)
+          
+          if (e_22 > 0 & dim(table(data_22$trait)) == 2 &dim(table(data_22$evt)) == 2 & sum(table(data_22$evt,data_22$trait)!=0)==4) { 
+            # to do the LR test we need at least one patient who experienced the event 
+            # and one who didn't, in each treatment group
+            data_12 <- filter(data, recrutement <= tps_interim)
+            
+            LR_12 <-  as.numeric(logrank.test(time = data_12$tt,
+                                              event = data_12$evt,
+                                              group = data_12$trait,
+                                              alternative = "less")$test[3])
+            d_12 <- sum(data_12$evt)
+            Z12 <- ((sqrt(d_12) * LR_12) - (sqrt(d1) * LR_1)) / (sqrt(d_12 - d1))
+            
+            LR_22 <- as.numeric(logrank.test(time = data_22$tt,
+                                             event = data_22$evt,
+                                             group = data_22$trait,
+                                             alternative = "less")$test[3])
+            COMBI_J <-  (w11 * LR_1) + (w12 * Z12) + (w22 * LR_22)
+          }else{
+            COMBI_J <-  ((w11 * LR_1) + (sqrt(w12^2+w22^2) * Z2)) #w2=sqrt(w11^2+w12^2)
+          }
+          p_final <-1-pnorm(COMBI_J)
+          decision_J <- ifelse(p_final < final_stop, "reject H0", "don't reject H0")
+          
+        }else{
+          prop_efficacy[i] <- 0
+          classique[i] <- 1
+          p2 <- (1-pnorm(LR_2))
+          decision_D <- ifelse(p2 < final_stop, "reject H0", "don't reject H0")
+          decision <- ifelse(p2 < final_stop, "reject H0", "don't reject H0")
+          decision_J <- ifelse(p2 < final_stop, "reject H0", "don't reject H0")
+          decision_naive <- ifelse(p2 < final_stop, 1, 0)
+        }
+        
+      }
+      prop_rejet_DESSEAUX[i] <- ifelse(decision_D == "reject H0", 1, 0)
+      prop_efficacy[i] <- ifelse(early_stopping_D == "efficacy", 1, 0)
+      prop_rejet_WASSMER[i] <- ifelse(decision == "reject H0", 1, 0)
+      prop_rejet_JORGENS[i] <- ifelse(decision_J == "reject H0", 1, 0)
+      prop_rejet_NAIVE[i] <- decision_naive
+    }else{ #tau=1 OR we already recruited N patients and we still don't observe the number of events necessary to perform the interim analysis (tau*N)
+      adaptation[i] <- 0
+      classique[i] <- 0
+      additionnal_deaths[i] <- sum(data$evt)
+      LR_2 <- as.numeric(logrank.test(time = data$tt,
+                                      event = data$evt,
+                                      group = data$trait,
+                                      alternative = "greater")$test[3])
+      p2 <- 1 - pnorm(LR_2)
+      if (p2 < alpha) {
+        decision <- "reject H0"
+      }else{
+        decision <- "don't reject H0"
+      }
+      prop_rejet <- ifelse(decision == "reject H0", 1, 0)
+      prop_efficacy[i] <- 0
+      prop_rejet_DESSEAUX[i] <- prop_rejet
+      prop_rejet_WASSMER[i] <- prop_rejet
+      prop_rejet_JORGENS[i] <- prop_rejet
+      prop_rejet_NAIVE[i] <- prop_rejet
+      
+      fit2 <- coxph(Surv(tt, evt)~trait, data = data)
+      Zstat2 <- summary(fit2)$coef[1]
+      logHR_estime1[i] <- NA
+      logHR_estime2[i] <- Zstat2
+      decision_Bayes <- ifelse(Zstat2 < qnorm(alpha )/sqrt(d / var), 1, 0)
+      efficacy_Bayes[i] <- 0
+      prop_rejet_BAYES_SSR[i] <- decision_Bayes
+      SS2[i] <- dim(data)[1]
+      SS2_Bayes[i] <- dim(data)[1]
+    }
+  }
+  efficacy[b] <- mean(prop_efficacy)
+  efficacy_BAYES[b] <- mean(efficacy_Bayes)
+  DESSEAUX[b] <- mean(prop_rejet_DESSEAUX)
+  WASSMER[b] <- mean(prop_rejet_WASSMER)
+  JORGENS[b] <- mean(prop_rejet_JORGENS)
+  
+  BAYES_SSR[b] <- mean(prop_rejet_BAYES_SSR)
+  Biais1[b] <- mean(na.omit(logHR_estime1)) - theta
+  Biais2[b] <- mean(na.omit(logHR_estime2)) - theta
+  NAIVE[b] <- mean(prop_rejet_NAIVE)
+  effectif[b] <- mean(SS2)
+  effectif_Bayes[b] <- mean(SS2_Bayes)
+  Adaptation[b] <- mean(adaptation)
+  Mean_additionnal_deaths[b] <- mean(additionnal_deaths)
+}
+
+Results_handicap0.16_beta0.2_HR0.67 <- data.frame(TAU, efficacy_BAYES, efficacy, DESSEAUX, WASSMER, JORGENS, NAIVE,BAYES_SSR,Biais1,Biais2, effectif, effectif_Bayes, Adaptation,Mean_additionnal_deaths)
